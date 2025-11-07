@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Tìm khuôn mặt của bạn trong video YouTube">
+    <title>YouTube Face Finder - Tìm khuôn mặt trong video</title>
+    
+    <!-- React -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+        }
+        
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .animate-fade-in-up {
+            animation: fadeInUp 0.5s ease-out forwards;
+            opacity: 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useRef, useEffect } = React;
+        const { Camera, Upload, Search, Gift, AlertCircle, CheckCircle, Loader } = lucide;
+
+        function FaceFinder() {
+            const [step, setStep] = useState('upload');
+            const [userPhoto, setUserPhoto] = useState(null);
+            const [videoFrames, setVideoFrames] = useState([]);
+            const [matchedFrames, setMatchedFrames] = useState([]);
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [useCamera, setUseCamera] = useState(false);
+            const [faceApiReady, setFaceApiReady] = useState(false);
+            const [loadingMessage, setLoadingMessage] = useState('');
+            const [progress, setProgress] = useState(0);
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+            const fileInputRef = useRef(null);
+
+            useEffect(() => {
+                const loadFaceApi = async () => {
+                    try {
+                        setLoadingMessage('Đang tải AI nhận diện khuôn mặt...');
+                        
+                        await new Promise((resolve) => {
+                            const script = document.createElement('script');
+                            script.src = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.min.js';
+                            script.onload = resolve;
+                            document.head.appendChild(script);
+                        });
+                        
+                        setLoadingMessage('Đang tải mô hình AI...');
+                        const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
+                        
+                        await Promise.all([
+                            faceApi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+                            faceApi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                            faceApi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+                        ]);
+                        
+                        setFaceApiReady(true);
+                        setLoadingMessage('');
+                        
+                        await loadFramesData();
+                    } catch (err) {
+                        console.error('Error loading face-api:', err);
+                        setLoadingMessage('Lỗi tải thư viện. Vui lòng refresh trang.');
+                    }
+                };
+                
+                loadFaceApi();
+            }, []);
+
+            const loadFramesData = async () => {
+                try {
+                    const response = await fetch('./frames.json');
+                    if (response.ok) {
+                        const data = await response.json();
+                        
+                        const framesWithDescriptors = data.frames.map(frame => ({
+                            ...frame,
+                            faceDescriptor: new Float32Array(frame.faceDescriptor)
+                        }));
+                        
+                        setVideoFrames(framesWithDescriptors);
+                        console.log(`Loaded ${framesWithDescriptors.length} frames`);
+                    } else {
+                        console.log('No frames.json found');
+                    }
+                } catch (err) {
+                    console.error('Error loading frames:', err);
+                }
+            };
+
+            useEffect(() => {
+                if (useCamera && videoRef.current) {
+                    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } })
+                        .then(stream => {
+                            videoRef.current.srcObject = stream;
+                        })
+                        .catch(err => {
+                            console.error('Camera error:', err);
+                            alert('Không thể truy cập camera!');
+                            setUseCamera(false);
+                        });
+                }
+                return () => {
+                    if (videoRef.current?.srcObject) {
+                        videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+                    }
+                };
+            }, [useCamera]);
+
+            const captureFromCamera = async () => {
+                const canvas = canvasRef.current;
+                const video = videoRef.current;
+                
+                if (!video.videoWidth) {
+                    alert('Camera chưa sẵn sàng!');
+                    return;
+                }
+                
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0);
+                const photoUrl = canvas.toDataURL('image/jpeg', 0.95);
+                
+                setUserPhoto(photoUrl);
+                setUseCamera(false);
+                
+                if (video.srcObject) {
+                    video.srcObject.getTracks().forEach(track => track.stop());
+                }
+            };
+
+            const handleFileUpload = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => setUserPhoto(e.target.result);
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            const searchForFaces = async () => {
+                if (!faceApiReady) {
+                    alert('AI chưa sẵn sàng!');
+                    return;
+                }
+                
+                if (videoFrames.length === 0) {
+                    alert('Chưa có dữ liệu video! Vui lòng chạy Python script để tạo frames.json');
+                    return;
+                }
+                
+                setIsProcessing(true);
+                setStep('results');
+                setLoadingMessage('Đang phân tích khuôn mặt...');
+                setProgress(0);
+                
+                try {
+                    const img = await faceApi.bufferToImage(userPhoto);
+                    const userDetection = await faceApi
+                        .detectSingleFace(img)
+                        .withFaceLandmarks()
+                        .withFaceDescriptor();
+                    
+                    if (!userDetection) {
+                        alert('Không tìm thấy khuôn mặt trong ảnh!');
+                        setIsProcessing(false);
+                        setStep('upload');
+                        setLoadingMessage('');
+                        return;
+                    }
+                    
+                    setLoadingMessage('Đang so sánh với video...');
+                    
+                    const matches = [];
+                    const threshold = 0.55;
+                    
+                    for (let i = 0; i < videoFrames.length; i++) {
+                        const frame = videoFrames[i];
+                        
+                        try {
+                            const distance = faceApi.euclideanDistance(
+                                userDetection.descriptor,
+                                frame.faceDescriptor
+                            );
+                            
+                            if (distance < threshold) {
+                                matches.push({
+                                    ...frame,
+                                    similarity: Math.round((1 - distance) * 100),
+                                    distance: distance.toFixed(3)
+                                });
+                            }
+                        } catch (err) {
+                            console.error('Error comparing frame:', err);
+                        }
+                        
+                        const percent = Math.round(((i + 1) / videoFrames.length) * 100);
+                        setProgress(percent);
+                        setLoadingMessage(`Đang kiểm tra: ${percent}%`);
+                        
+                        await new Promise(r => setTimeout(r, 10));
+                    }
+                    
+                    matches.sort((a, b) => b.similarity - a.similarity);
+                    
+                    setMatchedFrames(matches);
+                    setIsProcessing(false);
+                    setLoadingMessage('');
+                    setProgress(0);
+                } catch (err) {
+                    console.error('Error:', err);
+                    alert('Lỗi khi tìm kiếm!');
+                    setIsProcessing(false);
+                    setLoadingMessage('');
+                }
+            };
+
+            return React.createElement('div', { className: 'min-h-screen bg-gradient-to-br from-purple-600 via-pink-500 to-red-500 p-4' },
+                React.createElement('div', { className: 'max-w-4xl mx-auto' },
+                    React.createElement('div', { className: 'bg-white rounded-3xl shadow-2xl p-8 mb-6' },
+                        React.createElement('h1', { className: 'text-4xl font-bold text-center mb-2 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent' },
+                            '🎬 YouTube Face Finder'
+                        ),
+                        React.createElement('p', { className: 'text-center text-gray-600' }, 'Tìm khuôn mặt của bạn trong video'),
+                        
+                        !faceApiReady && React.createElement('div', { className: 'mt-4 flex items-center justify-center gap-2 text-blue-600' },
+                            React.createElement(Loader, { className: 'animate-spin', size: 20 }),
+                            React.createElement('span', null, loadingMessage || 'Đang khởi động...')
+                        ),
+                        
+                        faceApiReady && videoFrames.length === 0 && React.createElement('div', { className: 'mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg' },
+                            React.createElement('div', { className: 'flex items-start gap-2' },
+                                React.createElement(AlertCircle, { className: 'text-yellow-600 mt-1', size: 20 }),
+                                React.createElement('div', { className: 'text-sm text-yellow-800' },
+                                    React.createElement('p', { className: 'font-semibold' }, 'Chưa có dữ liệu video!'),
+                                    React.createElement('p', null, 'Vui lòng chạy Python script để tạo frames.json')
+                                )
+                            )
+                        ),
+                        
+                        faceApiReady && videoFrames.length > 0 && React.createElement('div', { className: 'mt-4 p-4 bg-green-50 border border-green-200 rounded-lg' },
+                            React.createElement('div', { className: 'flex items-center gap-2' },
+                                React.createElement(CheckCircle, { className: 'text-green-600', size: 20 }),
+                                React.createElement('span', { className: 'text-sm text-green-800 font-semibold' },
+                                    `Đã tải ${videoFrames.length} frames từ video`
+                                )
+                            )
+                        )
+                    ),
+                    
+                    React.createElement('div', { className: 'bg-white rounded-3xl shadow-2xl p-8' },
+                        step === 'upload' && React.createElement('div', { className: 'space-y-6' },
+                            React.createElement('h2', { className: 'text-2xl font-semibold text-center' }, 'Tải ảnh khuôn mặt của bạn'),
+                            
+                            !userPhoto ? (
+                                React.createElement('div', { className: 'space-y-4' },
+                                    useCamera ? (
+                                        React.createElement('div', { className: 'space-y-4' },
+                                            React.createElement('video', { 
+                                                ref: videoRef,
+                                                autoPlay: true,
+                                                playsInline: true,
+                                                className: 'w-full max-w-md mx-auto rounded-lg shadow-lg'
+                                            }),
+                                            React.createElement('canvas', { ref: canvasRef, className: 'hidden' }),
+                                            React.createElement('div', { className: 'flex gap-4 justify-center' },
+                                                React.createElement('button', {
+                                                    onClick: captureFromCamera,
+                                                    className: 'px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition font-semibold'
+                                                }, '📸 Chụp ảnh'),
+                                                React.createElement('button', {
+                                                    onClick: () => {
+                                                        setUseCamera(false);
+                                                        if (videoRef.current?.srcObject) {
+                                                            videoRef.current.srcObject.getTracks().forEach(t => t.stop());
+                                                        }
+                                                    },
+                                                    className: 'px-6 py-3 bg-gray-400 text-white rounded-lg hover:bg-gray-500 transition'
+                                                }, 'Hủy')
+                                            )
+                                        )
+                                    ) : (
+                                        React.createElement('div', { className: 'flex flex-col sm:flex-row gap-4 justify-center' },
+                                            React.createElement('button', {
+                                                onClick: () => fileInputRef.current?.click(),
+                                                className: 'flex items-center justify-center gap-2 px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition font-semibold'
+                                            },
+                                                React.createElement(Upload, { size: 20 }),
+                                                'Tải ảnh lên'
+                                            ),
+                                            React.createElement('button', {
+                                                onClick: () => setUseCamera(true),
+                                                className: 'flex items-center justify-center gap-2 px-6 py-3 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition font-semibold'
+                                            },
+                                                React.createElement(Camera, { size: 20 }),
+                                                'Dùng Camera'
+                                            )
+                                        )
+                                    ),
+                                    React.createElement('input', {
+                                        ref: fileInputRef,
+                                        type: 'file',
+                                        accept: 'image/*',
+                                        onChange: handleFileUpload,
+                                        className: 'hidden'
+                                    })
+                                )
+                            ) : (
+                                React.createElement('div', { className: 'space-y-4' },
+                                    React.createElement('img', {
+                                        src: userPhoto,
+                                        alt: 'Your face',
+                                        className: 'max-w-md mx-auto rounded-lg shadow-lg'
+                                    }),
+                                    React.createElement('div', { className: 'flex gap-4 justify-center flex-wrap' },
+                                        React.createElement('button', {
+                                            onClick: searchForFaces,
+                                            disabled: !faceApiReady || videoFrames.length === 0,
+                                            className: 'flex items-center gap-2 px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg hover:from-purple-600 hover:to-pink-600 transition transform hover:scale-105 font-semibold disabled:opacity-50 disabled:cursor-not-allowed'
+                                        },
+                                            React.createElement(Search, { size: 20 }),
+                                            'Tìm kiếm ngay'
+                                        ),
+                                        React.createElement('button', {
+                                            onClick: () => setUserPhoto(null),
+                                            className: 'px-6 py-3 bg-gray-400 text-white rounded-lg hover:bg-gray-500 transition'
+                                        }, 'Chọn lại')
+                                    )
+                                )
+                            )
+                        ),
+                        
+                        step === 'results' && (
+                            isProcessing ? (
+                                React.createElement('div', { className: 'text-center py-12' },
+                                    React.createElement(Loader, { className: 'inline-block animate-spin h-16 w-16 text-purple-500' }),
+                                    React.createElement('p', { className: 'mt-4 text-xl text-gray-600' }, loadingMessage),
+                                    progress > 0 && React.createElement('div', { className: 'mt-4 max-w-md mx-auto' },
+                                        React.createElement('div', { className: 'w-full bg-gray-200 rounded-full h-4' },
+                                            React.createElement('div', {
+                                                className: 'bg-gradient-to-r from-purple-500 to-pink-500 h-4 rounded-full transition-all',
+                                                style: { width: `${progress}%` }
+                                            })
+                                        ),
+                                        React.createElement('p', { className: 'mt-2 text-sm text-gray-600' }, `${progress}%`)
+                                    )
+                                )
+                            ) : matchedFrames.length > 0 ? (
+                                React.createElement('div', null,
+                                    React.createElement('h2', { className: 'text-2xl font-semibold mb-4 text-center' },
+                                        `🎉 Tìm thấy ${matchedFrames.length} kết quả!`
+                                    ),
+                                    React.createElement('div', { className: 'grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6' },
+                                        matchedFrames.map((frame, idx) =>
+                                            React.createElement('div', {
+                                                key: frame.id,
+                                                className: 'relative rounded-lg overflow-hidden shadow-lg hover:shadow-2xl transition group animate-fade-in-up',
+                                                style: { animationDelay: `${idx * 0.1}s` }
+                                            },
+                                                React.createElement('img', {
+                                                    src: frame.url,
+                                                    alt: `Frame ${frame.id}`,
+                                                    className: 'w-full'
+                                                }),
+                                                React.createElement('div', { className: 'absolute bottom-0 left-0 right-0 p-4 text-white bg-gradient-to-t from-black/70' },
+                                                    React.createElement('p', { className: 'font-semibold' }, `⏱️ ${frame.timestamp}`),
+                                                    React.createElement('p', { className: 'text-sm' }, `🎯 Độ khớp: ${frame.similarity}%`)
+                                                ),
+                                                React.createElement('div', { className: 'absolute top-2 right-2 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-semibold' },
+                                                    `#${idx + 1}`
+                                                )
+                                            )
+                                        )
+                                    ),
+                                    React.createElement('div', { className: 'text-center space-y-4' },
+                                        React.createElement('button', {
+                                            onClick: () => setStep('donate'),
+                                            className: 'inline-flex items-center gap-2 px-8 py-4 bg-gradient-to-r from-yellow-400 to-orange-500 text-white rounded-lg hover:from-yellow-500 hover:to-orange-600 transition transform hover:scale-105 text-xl font-semibold shadow-lg'
+                                        },
+                                            React.createElement(Gift, { size: 24 }),
+                                            'Ủng hộ dự án'
+                                        ),
+                                        React.createElement('br'),
+                                        React.createElement('button', {
+                                            onClick: () => {
+                                                setStep('upload');
+                                                setUserPhoto(null);
+                                                setMatchedFrames([]);
+                                            },
+                                            className: 'px-6 py-3 bg-gray-400 text-white rounded-lg hover:bg-gray-500 transition'
+                                        }, 'Tìm kiếm mới')
+                                    )
+                                )
+                            ) : (
+                                React.createElement('div', { className: 'text-center py-12' },
+                                    React.createElement('p', { className: 'text-3xl mb-2' }, '😢'),
+                                    React.createElement('p', { className: 'text-2xl text-gray-600 mb-4' }, 'Không tìm thấy khuôn mặt của bạn'),
+                                    React.createElement('p', { className: 'text-gray-500 mb-6' }, 'Thử với ảnh khác hoặc điều chỉnh góc chụp'),
+                                    React.createElement('button', {
+                                        onClick: () => {
+                                            setStep('upload');
+                                            setUserPhoto(null);
+                                        },
+                                        className: 'px-6 py-3 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition'
+                                    }, 'Thử lại')
+                                )
+                            )
+                        ),
+                        
+                        step === 'donate' && React.createElement('div', { className: 'text-center space-y-6' },
+                            React.createElement('h2', { className: 'text-3xl font-bold bg-gradient-to-r from-yellow-400 to-orange-500 bg-clip-text text-transparent' },
+                                '💝 Cảm ơn bạn!'
+                            ),
+                            React.createElement('p', { className: 'text-gray-600' }, 'Nếu bạn thấy hữu ích, hãy ủng hộ để duy trì dự án'),
+                            React.createElement('div', { className: 'bg-gradient-to-br from-yellow-100 to-orange-100 p-8 rounded-2xl inline-block' },
+                                React.createElement('div', { className: 'bg-white p-6 rounded-xl shadow-xl' },
+                                    React.createElement('svg', { width: '200', height: '200', viewBox: '0 0 200 200' },
+                                        React.createElement('rect', { width: '200', height: '200', fill: 'white' }),
+                                        React.createElement('rect', { x: '20', y: '20', width: '20', height: '20', fill: 'black' }),
+                                        React.createElement('rect', { x: '60', y: '20', width: '20', height: '20', fill: 'black' }),
+                                        React.createElement('rect', { x: '100', y: '20', width: '20', height: '20', fill: 'black' }),
+                                        React.createElement('rect', { x: '140', y: '20', width: '20', height: '20', fill: 'black' }),
+                                        React.createElement('rect', { x: '160', y: '20', width: '20', height: '20', fill: 'black' }),
+                                        React.createElement('text', { x: '100', y: '105', textAnchor: 'middle', fontSize: '14', fill: '#666' }, 'DONATE')
+                                    )
+                                ),
+                                React.createElement('p', { className: 'mt-4 text-gray-700 font-medium' }, 'Quét mã QR để donate')
+                            ),
+                            React.createElement('button', {
+                                onClick: () => {
+                                    setStep('upload');
+                                    setUserPhoto(null);
+                                    setMatchedFrames([]);
+                                },
+                                className: 'px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg hover:from-purple-600 hover:to-pink-600 transition'
+                            }, 'Tìm kiếm mới')
+                        )
+                    ),
+                    
+                    React.createElement('div', { className: 'mt-6 bg-white/90 rounded-2xl p-6 text-sm text-gray-700' },
+                        React.createElement('h3', { className: 'font-semibold text-lg mb-3' }, '📋 Hướng dẫn sử dụng:'),
+                        React.createElement('ol', { className: 'space-y-2 list-decimal list-inside' },
+                            React.createElement('li', null, 'Chạy Python script để tải video YouTube và tách frames'),
+                            React.createElement('li', null, 'Upload file frames.json vào thư mục web app'),
+                            React.createElement('li', null, 'Tải ảnh khuôn mặt hoặc chụp từ camera'),
+                            React.createElement('li', null, 'Nhấn "Tìm kiếm" và đợi kết quả')
+                        ),
+                        React.createElement('p', { className: 'mt-3 text-xs text-gray-500' },
+                            '✅ 100% miễn phí • 🔒 Xử lý trên trình duyệt • 🚀 Không cần server'
+                        )
+                    )
+                )
+            );
+        }
+
+        // Render app
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(React.createElement(FaceFinder));
+        
+        // Initialize Lucide icons
+        lucide.createIcons();
+    </script>
+</body>
+</html>
