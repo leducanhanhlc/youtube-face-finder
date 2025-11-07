@@ -139,9 +139,9 @@
                         const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
                         
                         await Promise.all([
-                            faceApi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-                            faceApi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-                            faceApi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+                            window.faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+                            window.faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                            window.faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
                         ]);
                         
                         setFaceApiReady(true);
@@ -245,8 +245,12 @@
                 setProgress(0);
                 
                 try {
-                    const img = await faceApi.bufferToImage(userPhoto);
-                    const userDetection = await faceApi
+                    // Convert data URL to Blob
+                    const response = await fetch(userPhoto);
+                    const blob = await response.blob();
+                    const img = await window.faceapi.bufferToImage(blob);
+                    
+                    const userDetection = await window.faceapi
                         .detectSingleFace(img)
                         .withFaceLandmarks()
                         .withFaceDescriptor();
@@ -268,7 +272,7 @@
                         const frame = videoFrames[i];
                         
                         try {
-                            const distance = faceApi.euclideanDistance(
+                            const distance = window.faceapi.euclideanDistance(
                                 userDetection.descriptor,
                                 frame.faceDescriptor
                             );
